@@ -96,9 +96,10 @@ svg text{fill:var(--muted);font-size:11px}
 header{padding-top:env(safe-area-inset-top)}
 main{padding-bottom:calc(16px + env(safe-area-inset-bottom))}
 #installBtn{display:none}
-#updBar{display:none;position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:20;max-width:560px;margin:0 auto;
+#updBar,#undoBar{display:none;position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:20;max-width:560px;margin:0 auto;
   background:var(--card);border:1px solid var(--accent);border-radius:12px;padding:10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.18);align-items:center;gap:10px}
-#updBar.show{display:flex}
+#updBar.show,#undoBar.show{display:flex}
+#undoBar{z-index:21}
 @media (max-width:600px){
   .top{padding:10px 12px 0;gap:8px}
   .top h1{font-size:16px}
@@ -124,6 +125,7 @@ main{padding-bottom:calc(16px + env(safe-area-inset-bottom))}
   <div class="top">
     <h1>🏠 家庭記帳本</h1>
     <button id="installBtn" class="btn ghost" onclick="installApp()">📲 安裝</button>
+    <button id="undoBtn" class="btn ghost" onclick="undoLast()" hidden>↩ 復原</button>
     <select id="monthSel" title="分析月份"></select>
     <button class="btn" onclick="openForm('txns')">＋ 記一筆</button>
   </div>
@@ -131,6 +133,7 @@ main{padding-bottom:calc(16px + env(safe-area-inset-bottom))}
 </header>
 <main id="main"></main>
 <div id="updBar" role="status"></div>
+<div id="undoBar" role="status"></div>
 <dialog id="dlg"><form id="dlgForm" method="dialog"></form></dialog>
 <dialog id="imp"><div class="imp" id="impBody"></div></dialog>
 <dialog id="ext"><div class="imp" id="extBody"></div></dialog>
@@ -156,9 +159,11 @@ function shiftYm(ym,k){let[y,m]=ym.split('-').map(Number);m+=k;while(m<1){m+=12;
    2) 在 MIGRATIONS 加一個對應的函式，把舊資料轉成新格式
    舊備份檔匯入、或瀏覽器內的舊資料，都會自動依序升級，不會遺失。
    （儲存鍵 KEY 請勿更改，否則會讀不到既有資料）*/
-const APP_VERSION='1.6.1';   // 改版時同步修改 sw.js 的 VERSION，手機才會更新快取
+const APP_VERSION='1.6.3';   // 改版時同步修改 sw.js 的 VERSION，手機才會更新快取
 const SCHEMA_VERSION=2;
 const CHANGELOG=[
+  ['1.6.3','↩ 復原：匯入對帳單／帳單／備份或清除資料前自動保留還原點（最多 5 個），匯入後下方出現「復原」、標題列常駐復原鈕，設定頁可選擇復原到哪一步'],
+  ['1.6.2','證券月對帳單匯入（富邦等）：讀取交割資料（依交割日記交割款）與現股買賣明細（定期定額、整張／零股），自動補股票代號並記住、與對帳單合計核對'],
   ['1.6.1','自動更新：開啟 App 時檢查新版本並在畫面下方提示「立即更新」、設定頁可手動檢查更新；下載檔版本會提示改用網址'],
   ['1.6.0','對帳單自行校正：自動判斷失敗時改用手動欄位對應（可從右邊數欄位）、指定金額方向、逐筆修改日期金額、儲存各家格式並自動套用；信用卡帳單也支援'],
   ['1.5.1','銀行對帳單支援合庫等「電子綜合對帳單」：金額與手續費分行列出的轉帳明細、以帳戶總覽餘額校正'],
@@ -589,10 +594,12 @@ const VIEWS={
       <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="updateFx()">🌐 線上更新匯率</button><span class="muted" style="font-size:12px">資料來源 open.er-api.com（只下載匯率，不會傳送你的資料）</span></div></div>
     <div class="card"><h3>資料備份與還原</h3><p class="muted" style="margin-top:0">資料只存在這台電腦的瀏覽器裡，不會上傳。建議每月匯出一次備份，並存到雲端硬碟或隨身碟。<br>
       上次備份：<b>${S.meta.lastBackup?esc(S.meta.lastBackup.slice(0,10)):'從未備份'}</b>・目前共 ${S.txns.length} 筆收支</p>
-      <div class="row"><button class="btn" onclick="exportData()">⬇ 匯出備份 (JSON)</button><label class="btn ghost">⬆ 匯入備份<input type="file" accept=".json,application/json" hidden onchange="importData(this.files[0]);this.value=''"></label>
-      ${hasUndo()?`<button class="btn ghost" onclick="undoImport()">↩ 還原到匯入前</button>`:''}</div>
+      <div class="row"><button class="btn" onclick="exportData()">⬇ 匯出備份 (JSON)</button><label class="btn ghost">⬆ 匯入備份<input type="file" accept=".json,application/json" hidden onchange="importData(this.files[0]);this.value=''"></label></div>
       <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="openExt()">📥 從其他記帳 App 匯入（CWMoney 等）</button></div>
-      <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="loadSample()">載入範例資料</button><button class="danger btn" onclick="if(confirm('清除全部資料？建議先匯出備份。')){snapshot();S=defaultState();save();render()}">清除全部</button></div></div>
+      <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="loadSample()">載入範例資料</button><button class="danger btn" onclick="if(confirm('清除全部資料？建議先匯出備份。')){snapshot('清除全部資料');S=defaultState();save();render();showUndoBar('已清除全部資料')}">清除全部</button></div></div>
+    ${(()=>{const L=undoList();return L.length?`<div class="card"><h3>↩ 復原紀錄</h3><p class="muted" style="margin-top:0;font-size:13px">每次匯入對帳單、帳單、備份或清除資料之前，會自動保留還原點（最多 ${UNDO_MAX} 個）。選錯帳戶匯入時，按「復原」就能回到匯入前，再重新匯入一次。</p>
+      <div class="grid" style="gap:6px">${L.map((u,i)=>({u,i})).reverse().map(({u,i},k)=>`<div class="row" style="font-size:14px"><span style="flex:1">${k===0?'<span class="tag">最近</span> ':''}${esc(u.label)} <span class="muted" style="font-size:12px">${undoWhen(u.at)}</span></span>
+        <button class="btn ghost mini" onclick="undoLast(${i})">${k===0?'↩ 復原':'↩ 復原到這之前'}</button></div>`).join('')}</div></div>`:''})()}
     <div class="card"><h3>版本資訊</h3><p style="margin-top:0">App 版本 <b>${APP_VERSION}</b>・資料版本 <b>${S.version}</b></p>
       ${PWA.http?`<div class="row"><button class="btn ghost" onclick="checkUpdate(true)">🔄 檢查更新</button><span class="muted" style="font-size:13px" id="updMsg">${UPD.latest&&cmpVer(UPD.latest,APP_VERSION)>0?`有新版本 v${esc(UPD.latest)}`:UPD.checked?'已是最新版本':'開啟 App 時會自動檢查'}</span></div>
         <p class="muted" style="font-size:13px">網站有新版本時，下方會出現「有新版本」提示，按「立即更新」即可，資料不受影響。</p>`
@@ -611,13 +618,37 @@ function exportData(){
   const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`家庭記帳備份_${todayStr()}_v${APP_VERSION}.json`;
   document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000);render();
 }
-const UNDO_KEY=KEY+'.beforeImport';
-function snapshot(){try{localStorage.setItem(UNDO_KEY,JSON.stringify(S))}catch(e){}}
-function hasUndo(){try{return!!localStorage.getItem(UNDO_KEY)}catch(e){return false}}
-function undoImport(){
-  if(!confirm('還原到最近一次「匯入／清除」之前的資料？'))return;
-  try{S=migrate(JSON.parse(localStorage.getItem(UNDO_KEY)));localStorage.removeItem(UNDO_KEY);save();render();alert('已還原')}catch(e){alert('還原失敗：'+e.message)}
+/* ---- 復原：每次匯入／清除前存一個還原點（最多 5 個），可一步步退回 ---- */
+const UNDO_KEY=KEY+'.beforeImport',UNDO_MAX=5;
+function undoList(){
+  try{const v=JSON.parse(localStorage.getItem(UNDO_KEY)||'null');if(!v)return[];
+    return Array.isArray(v)?v:[{label:'匯入前',at:'',data:v}]}catch(e){return[]}   // 舊版只存一份
 }
+function undoSave(list){
+  while(true){try{list.length?localStorage.setItem(UNDO_KEY,JSON.stringify(list)):localStorage.removeItem(UNDO_KEY);return true}
+    catch(e){if(list.length<=1)return false;list.shift()}}   // 空間不夠就丟掉最舊的
+}
+function snapshot(label){
+  const list=undoList();list.push({label:label||'匯入前',at:new Date().toISOString(),data:JSON.parse(JSON.stringify(S))});
+  while(list.length>UNDO_MAX)list.shift();undoSave(list);updUndoBtn();
+}
+function hasUndo(){return undoList().length>0}
+const undoWhen=at=>at?new Date(at).toLocaleString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
+function undoLast(idx){
+  const list=undoList();if(!list.length)return alert('沒有可以復原的動作');
+  const i=idx??list.length-1;const u=list[i];const steps=list.length-i;
+  if(!confirm(`復原「${u.label}」${undoWhen(u.at)?`（${undoWhen(u.at)}）`:''}？\n\n資料會回到這個動作之前的樣子${steps>1?`，之後的 ${steps-1} 個動作也會一起取消`:''}。`))return;
+  try{S=migrate(u.data);undoSave(list.slice(0,i));save();hideUndoBar();render();updUndoBtn();alert('已復原：'+u.label)}catch(e){alert('復原失敗：'+e.message)}
+}
+const undoImport=()=>undoLast();
+function updUndoBtn(){const b=document.getElementById('undoBtn');if(!b)return;const l=undoList();b.hidden=!l.length;if(l.length)b.title='復原：'+l[l.length-1].label}
+let undoTimer=null;
+function showUndoBar(msg){
+  const b=document.getElementById('undoBar');
+  b.innerHTML=`<span style="flex:1">✅ ${esc(msg)}<br><span class="muted" style="font-size:12px">選錯帳戶或匯錯了？按「復原」回到匯入前。</span></span><button class="btn" onclick="undoLast()">↩ 復原</button><button class="btn ghost" onclick="hideUndoBar()">✕</button>`;
+  b.classList.add('show');clearTimeout(undoTimer);undoTimer=setTimeout(hideUndoBar,30000);
+}
+function hideUndoBar(){document.getElementById('undoBar').classList.remove('show')}
 async function importData(f){
   if(!f)return;
   try{
@@ -628,7 +659,7 @@ async function importData(f){
     const next=migrate(JSON.parse(JSON.stringify(d)));
     const info=`備份日期：${raw.exportedAt?raw.exportedAt.slice(0,10):'未知'}（App v${raw.appVersion||'1.0'}）\n收支 ${next.txns.length} 筆、帳戶 ${next.accounts.length} 個、股票 ${next.stocks.length} 檔`;
     if(!confirm(`${info}\n\n匯入會「取代」目前的資料（目前收支 ${S.txns.length} 筆）。\n匯入前會自動保留一份還原點，可在「設定」還原。確定匯入？`))return;
-    snapshot();S=next;save();render();alert('匯入完成');
+    snapshot('匯入備份檔 '+(f.name||''));S=next;save();render();alert('匯入完成');showUndoBar('已匯入備份檔');
   }catch(e){alert('匯入失敗：'+(e instanceof SyntaxError||!e.message?'檔案格式不正確，請選擇從本 App 匯出的 .json 備份檔':e.message))}
 }
 async function updateFx(){
@@ -760,12 +791,13 @@ function impParse(){
 }
 function impCommit(){
   const sel=IMP.rows.filter(r=>r.on);if(!sel.length)return alert('沒有勾選任何交易');
+  const label=`匯入信用卡帳單 ${sel.length} 筆到「${S.cards.find(c=>c.id===IMP.cardId)?.name||''}」`;snapshot(label);
   sel.forEach(r=>S.txns.push({id:uid(),date:r.date,type:'expense',amount:r.amt,category:r.cat||'其他',memberId:r.memberId,accountId:'',cardId:IMP.cardId,note:r.desc}));
   const card=S.cards.find(c=>c.id===IMP.cardId);
   if(card&&IMP.updBill&&IMP.total!=null){card.bill=IMP.total;card.paid=false}
   curYm=sel.map(r=>ymOf(r.date)).sort().pop();
   save();document.getElementById('imp').close();render();
-  alert(`已匯入 ${sel.length} 筆，共 ${money(sel.reduce((s,r)=>s+r.amt,0))}`);
+  alert(`已匯入 ${sel.length} 筆，共 ${money(sel.reduce((s,r)=>s+r.amt,0))}`);showUndoBar(label);
 }
 function renderImp(){
   const body=document.getElementById('impBody');const n=IMP.rows.filter(r=>r.on);
@@ -948,7 +980,7 @@ function extCompute(){
 function extCommit(){
   const sel=EXT.rows.filter(r=>!r.dup||EXT.inclDup);if(!sel.length)return alert('沒有可匯入的資料');
   if(!confirm(`確定匯入 ${sel.length} 筆？（匯入前會自動保留還原點，可在「設定」還原）`))return;
-  snapshot();
+  snapshot(`從其他記帳 App 匯入 ${sel.length} 筆`);
   const created=[];let skipped=0;
   const findAcct=(name,cur)=>{
     if(!name)return'';const c=S.cards.find(c=>c.name===name);if(c)return'card:'+c.id;
@@ -969,6 +1001,7 @@ function extCommit(){
   }
   if(n)curYm=sel.map(r=>ymOf(r.date)).sort().pop();
   save();document.getElementById('ext').close();tab='txns';render();
+  setTimeout(()=>showUndoBar(`已從其他記帳 App 匯入 ${n} 筆`));
   alert(`已匯入 ${n} 筆${skipped?`，${skipped} 筆轉帳因缺少帳戶略過`:''}${created.length?`\n已自動建立 ${created.length} 個帳戶：${created.join('、')}\n請到「帳戶」設定期初餘額，餘額才會正確。`:''}`);
 }
 function renderExt(){
@@ -1139,6 +1172,66 @@ function bankAuto(desc,amt,acctId){
   return{kind:'income',cat:/薪/.test(desc)?'薪資':/利息/.test(desc)?'利息':/獎金|年終/.test(desc)?'獎金':'其他收入'};
 }
 const stockCode=v=>{const m=String(v??'').trim().match(/^([0-9]{4,6}[A-Z]?|[A-Z][A-Z.]{0,5})(?![0-9])\s*(.*)$/i);return m?{code:m[1].toUpperCase(),rest:m[2].trim()}:null};
+// 台股常見名稱 → 代號（券商月對帳單只印名稱時用來補代號；你改過的代號也會記住）
+const TW_CODES={台積電:'2330',鴻海:'2317',聯發科:'2454',聯電:'2303',緯創:'3231',廣達:'2382',台達電:'2308',日月光投控:'3711',中華電:'2412',
+  富邦金:'2881',國泰金:'2882',中信金:'2891',兆豐金:'2886',第一金:'2892',玉山金:'2884',元大金:'2885',合庫金:'5880',華南金:'2880',台新金:'2887',永豐金:'2890',開發金:'2883',凱基金:'2883',彰銀:'2801',
+  台塑:'1301',南亞:'1303',台化:'1326',台塑化:'6505',台泥:'1101',統一:'1216',統一超:'2912',長榮:'2603',陽明:'2609',萬海:'2615',中鋼:'2002',大立光:'3008',華碩:'2357',英業達:'2356',仁寶:'2324',和碩:'4938',
+  技嘉:'2376',微星:'2377',緯穎:'6669','世芯-KY':'3661',精材:'3374',力積電:'6770',南亞科:'2408',華邦電:'2344',欣興:'3037',奇鋐:'3017',台光電:'2383',智邦:'2345',瑞昱:'2379',聯詠:'3034',光寶科:'2301',
+  群創:'3481',友達:'2409',長榮航:'2618',華航:'2610',創意:'3443',信驊:'5274',川湖:'2059',
+  元大台灣50:'0050',元大高股息:'0056',富邦台50:'006208',元大中型100:'0051',富邦科技:'0052',國泰永續高股息:'00878',元大台灣高息低波:'00713',群益台灣精選高息:'00919',復華台灣科技優息:'00929',
+  元大台灣價值高息:'00940',凱基優選高股息30:'00915',統一台灣高息動能:'00939',中信關鍵半導體:'00891',國泰台灣5G:'00881',元大臺灣ESG永續:'00850',元大美債20年:'00679B'};
+const nameKey=s=>String(s||'').replace(/[\s　]/g,'');
+function codeForName(n){n=nameKey(n);if(!n)return'';
+  const mem=(S.meta.stockNames||{})[n];if(mem)return mem;
+  const h=S.stocks.find(s=>nameKey(s.name)===n);return h?h.symbol:TW_CODES[n]||TW_CODES[n.replace(/臺/g,'台')]||''}
+// 券商月對帳單（富邦等）文字：讀「交割資料」與「現股買賣明細」
+//  交割：115/10/05  115/10/05  應 付  -5,317
+//  明細：115/10/06  115/10/08  普 買  聯 電  200  148.5000  29,700  42  0  0  29,742
+//       定期定額的「普 買 定 期 定」會印在日期行的上一行；PDF 偶爾把股數和價格黏在一起（3＋2,536.43 → 32,536.4300），用成交金額反推拆開
+function parseBrokerText(text){
+  const trades=[],settle=[];let sec='',pendSide='',total=null,rebate=null;
+  const D='(\\d{2,4}[\\/\\-.]\\d{1,2}[\\/\\-.]\\d{1,2})';
+  const iso=s=>{const p=s.split(/[\/\-.]/);return toISO(p[0],p[1],p[2])};
+  const cj=s=>s.replace(/([㐀-鿿])[ 　](?=[㐀-鿿])/g,'$1');   // 「第 一 金」→「第一金」
+  const isN=t=>/^-?\d[\d,]*(\.\d+)?$/.test(t);
+  const near=(a,b)=>Math.abs(a-b)<=Math.max(1.5,Math.abs(b)*0.002);
+  const sideOf=t=>/賣/.test(t)?'sell':/買/.test(t)?'buy':'';
+  for(const raw of text.split(/\r?\n/)){
+    const line=cj(raw.replace(/\t/g,'  ').trim());if(!line)continue;
+    const flat=line.replace(/\s/g,'');
+    if(/單位[:：]/.test(flat))sec=/現股/.test(flat)&&!/融資|融券|當沖|借貸/.test(flat)?'trade':/人民幣|美元|港幣|日圓/.test(flat)?'other':sec==='trade'?'other':sec;
+    if(/^應收\(\+\)\/付\(-\)金額-?[\d,]+$/.test(flat)){total=parseAmt(flat.replace(/^.*額/,''));continue}
+    if(/折讓手續費/.test(flat)){const n=flat.match(/(-?[\d,]+)$/);if(n)rebate=parseAmt(n[1]);continue}
+    const st=line.match(new RegExp('^'+D+'\\s+'+D+'\\s+(應收|應付)\\s+(-?[\\d,]+(?:\\.\\d+)?)$'));
+    if(st){const amt=parseAmt(st[4]);const a=st[3]==='應付'?-Math.abs(amt):Math.abs(amt);
+      const tdate=iso(st[1]),sdate=iso(st[2]);if(tdate&&sdate&&a)settle.push({tdate,sdate,amt:a});continue}
+    if(sec!=='trade')continue;
+    if(/本期合計|^合計/.test(flat)){sec='other';continue}
+    const m=line.match(new RegExp('^'+D+'\\s+'+D+'\\s+(.*)$'));
+    if(!m){if(flat.length<=10&&/買|賣/.test(flat))pendSide=sideOf(flat);continue}   // 「普 買 定 期 定」
+    const tdate=iso(m[1]),sdate=iso(m[2]);if(!tdate)continue;
+    let toks=m[3].split(/\s+/),side='',name='';const nums=[];
+    for(const t of toks){if(isN(t))nums.push(t);else if(!side&&t.length<=6&&/買|賣/.test(t)&&!name)side=sideOf(t);else if(!name)name=t}
+    side=side||pendSide;pendSide='';
+    const v=nums.map(parseAmt);
+    let i=v.findIndex((x,k)=>k>0&&k+1<v.length&&v[k-1]>0&&x>0&&near(v[k-1]*x,v[k+1]));
+    if(i<0){   // 股數和價格黏在一起
+      for(let k=0;k+1<nums.length&&i<0;k++){const t=nums[k];
+        for(let c=1;c<t.length;c++){const L=t.slice(0,c),R=t.slice(c);
+          if(!/^\d[\d,]*\d$|^\d$/.test(L)||/^[,.]/.test(R))continue;
+          if(near(parseAmt(L)*parseAmt(R),v[k+1])){v.splice(k,1,parseAmt(L),parseAmt(R));i=k+1;break}}}
+    }
+    if(i<0||!side||!name)continue;
+    const shares=v[i-1],price=v[i],amount=v[i+1],fee=v[i+2]||0;
+    const tail=v.slice(i+2);   // 手續費、交易稅…、客戶應收、客戶應付
+    let net=side==='buy'?tail[tail.length-1]:tail[tail.length-2];
+    let tax=side==='sell'&&v[i+3]!=null&&tail.length>=4?v[i+3]:0;
+    if(!(net>0))net=side==='buy'?amount+fee:amount-fee-tax;
+    if(side==='sell'&&!near(amount-fee-tax,net))tax=Math.max(0,amount-fee-net);
+    trades.push({date:tdate,sdate,name,side,shares,price,amount,fee,tax,net});
+  }
+  return{trades,settle,total,rebate};
+}
 
 let STM={};
 function openStm(mode){
@@ -1218,7 +1311,12 @@ function stmText(text){
   const ls=text.split(/\r?\n/).filter(l=>l.trim());
   const tabby=ls.filter(l=>l.includes('\t')).length>=ls.length/2;
   const p=matchProfile(text);
+  STM.broker=null;
   if(p&&p.src==='text'){STM.profile=p;stmTable(splitAll(text),true);return}   // 已儲存的格式優先
+  if(!tabby&&STM.mode==='trade'){   // 券商月對帳單：交割資料＋買賣明細
+    const b=parseBrokerText(text);
+    if(b.trades.length||b.settle.length){STM.src='text';STM.raw=null;STM.broker=b;stmCompute();return}
+  }
   if(!tabby&&(STM.mode==='bank'||STM.mode==='card')){
     STM.src='text';STM.raw=null;
     if(STM.mode==='bank'){STM.parsed=parseBankText(text);STM.meta=STM.parsed.meta}
@@ -1230,7 +1328,7 @@ function stmText(text){
   stmTable(splitAll(text),true);
 }
 function stmTable(rows,fromText){
-  STM.src='table';STM.fromText=!!fromText;STM.raw=rows;
+  STM.src='table';STM.fromText=!!fromText;STM.raw=rows;STM.broker=null;STM.settle=null;
   const p=STM.profile||matchProfile(rows.slice(0,60).map(r=>r.join(' ')).join('\n'));
   const d=detectCols(rows,STMT_SCHEMA[STM.mode]);STM.hdr=d.hdr;STM.map=d.map;
   if(p){STM.profile=p;STM.map={...p.map};STM.sign=p.sign||'auto';if(p.src==='text')STM.hdr=-1}
@@ -1285,6 +1383,15 @@ function stmCompute(){
       const ex=S.stocks.find(s=>s.symbol===sc.code&&s.memberId===STM.memberId);
       rows.push({code:sc.code,name,shares,cost:cost>0?+cost.toFixed(4):'',price:price>0?+price.toFixed(4):'',on:true,ex:!!ex});
     }
+  }else if(STM.broker){   // 券商月對帳單文字
+    const B=STM.broker;
+    rows=B.trades.map(t=>{const code=codeForName(t.name);
+      const dup=!!code&&(S.meta.trades||[]).includes([t.date,code,t.side,t.shares,t.price].join('|'));
+      return{...t,code,on:!dup,dup}});
+    STM.settle=B.settle.map(s=>{
+      const names=[...new Set(B.trades.filter(t=>t.date===s.tdate&&t.sdate===s.sdate&&(t.side==='buy')===(s.amt<0)).map(t=>t.name))];
+      const dup=S.txns.some(t=>t.type==='transfer'&&t.date===s.sdate&&Math.abs(+t.amount-Math.abs(s.amt))<0.5&&(t.accountId==='stock'||t.toAccountId==='stock'));
+      return{...s,desc:`證券交割${s.amt<0?'（買進）':'（賣出）'}${names.length?' '+names.join('、'):''}`,on:!dup,dup}});
   }else{
     for(const r of body){
       const date=parseAnyDate(g(r,'date'));const sc=stockCode(g(r,'code'));const sd=String(g(r,'side'));
@@ -1305,13 +1412,29 @@ function stmCompute(){
   STM.status=rows.length?`✅ 讀到 ${rows.length} 筆${bad?`（${bad} 列無法辨識已略過）`:''}${d?`，${d} 筆可能已匯入過（預設不勾選）`:''}。請確認後匯入。`
       +(eb?`<br><span class="muted" style="font-size:13px">對帳單「帳戶總覽」：轉出帳戶 ${esc(eb.acct)} 在 ${eb.date} 的餘額 ${money(eb.bal)}，勾選「校正」會以此為準。</span>`:'')
     :`⚠️ 沒有辨識到資料。${STM.raw?'請在「欄位對應」調整欄位；':''}也可以把明細複製後貼到文字框再試。`;
+  if(STM.broker){const B=STM.broker,sum=B.settle.reduce((s,x)=>s+x.amt,0),tn=B.trades.reduce((s,t)=>s+(t.side==='buy'?-t.net:t.net),0);
+    const ok=v=>B.total!=null?(Math.abs(v-B.total)<0.5?' ✓ 與對帳單合計相符':` ⚠️ 對帳單合計 ${money(B.total)}`):'';
+    const nc=rows.filter(r=>!r.code).length;
+    STM.status=`✅ 券商對帳單：交割資料 ${B.settle.length} 筆（應收付合計 ${money(sum)}${ok(sum)}）、買賣明細 ${rows.length} 筆${B.trades.length?`（淨收付 ${money(tn)}${ok(tn)}）`:''}。`
+      +(nc?`<br>⚠️ 有 ${nc} 檔對帳單只印名稱、查不到股票代號，請在表格中填入代號（之後會記住）。`:'')
+      +(d?`<br>${d} 筆交易可能已匯入過（預設不勾選）。`:'')
+      +(B.rebate?`<br><span class="muted" style="font-size:13px">本月手續費折讓 ${money(B.rebate)}，通常之後才退到交割帳戶，入帳時從銀行對帳單匯入即可。</span>`:'');
+  }
   if(STM.profile)STM.status=`📐 已套用已儲存的格式「${esc(STM.profile.name)}」。<br>`+STM.status;
 }
 function stmCommit(){
-  const sel=STM.rows.filter(r=>r.on&&(r.amt!==0||(STM.mode!=='bank'&&STM.mode!=='card')));if(!sel.length)return alert('沒有勾選任何資料');
+  const sel=STM.rows.filter(r=>r.on&&(r.amt!==0||(STM.mode!=='bank'&&STM.mode!=='card')));
+  const selSettle=STM.mode==='trade'&&STM.settle?STM.settle.filter(s=>s.on):[];
+  if(!sel.length&&!selSettle.length)return alert('沒有勾選任何資料');
+  if(STM.mode==='trade'){
+    const miss=sel.filter(r=>!stockCode(r.code));if(miss.length)return alert('請先填入這些股票的代號：\n'+miss.map(r=>r.name).join('、'));
+    if(selSettle.length&&!STM.settleId&&!sel.length)return alert('請先選擇「交割帳戶」，交割款才知道要記在哪個帳戶');
+  }
   if(STM.mode==='bank'&&!STM.accountId)return alert('請先選擇要匯入到哪個帳戶');
   if(STM.mode==='card'&&!S.cards.some(c=>c.id===STM.cardId))return alert('請先選擇要匯入到哪張信用卡');
-  snapshot();let msg='';
+  const target=STM.mode==='bank'?S.accounts.find(a=>a.id===STM.accountId)?.name:STM.mode==='card'?S.cards.find(c=>c.id===STM.cardId)?.name:memberName(STM.memberId);
+  const label=`${{bank:'匯入銀行對帳單',card:'匯入信用卡帳單',hold:'更新證券庫存',trade:'匯入證券交易'}[STM.mode]} ${sel.length||selSettle.length} 筆到「${target||''}」`;
+  snapshot(label);let msg='';
   if(STM.mode==='card'){
     const card=S.cards.find(c=>c.id===STM.cardId);let n=0;
     for(const r of sel){if(r.kind==='skip')continue;
@@ -1359,16 +1482,21 @@ function stmCommit(){
         if(h.shares<=0)S.stocks=S.stocks.filter(s=>s!==h);
       }
       if(r.price>0&&h&&S.stocks.includes(h))h.price=r.price;
-      if(STM.settleId){
+      if(r.name&&STM.broker){S.meta.stockNames=S.meta.stockNames||{};S.meta.stockNames[nameKey(r.name)]=r.code}
+      if(STM.settleId&&!STM.settle){   // 沒有交割資料時，逐筆依成交記交割款
         const amt=r.net??(r.side==='buy'?r.shares*r.price+r.fee:r.shares*r.price-r.fee-r.tax);
         S.txns.push({id:uid(),date:r.date,type:'transfer',category:'轉帳',amount:+amt.toFixed(2),currency:STM.currency,memberId:STM.memberId,cardId:'',toAmount:'',fee:'',
           accountId:r.side==='buy'?STM.settleId:'stock',toAccountId:r.side==='buy'?'stock':STM.settleId,note:`${r.side==='buy'?'買進':'賣出'} ${r.code} ${r.name} ${r.shares}股`});
       }
       S.meta.trades.push([r.date,r.code,r.side,r.shares,r.price].join('|'));n++;
     }
-    msg=`已套用 ${n} 筆交易到持股${pl?`\n賣出已實現損益：${money(pl*rate(STM.currency))}${STM.recordPL?'（已記入收支）':''}`:''}`;tab='stocks';
+    let sn=0,ss=0;
+    if(STM.settleId)for(const s of selSettle){   // 交割資料：依交割日記「銀行 ⇄ 股票」轉帳
+      S.txns.push({id:uid(),date:s.sdate,type:'transfer',category:'轉帳',amount:Math.abs(s.amt),currency:STM.currency,memberId:STM.memberId,cardId:'',toAmount:'',fee:'',
+        accountId:s.amt<0?STM.settleId:'stock',toAccountId:s.amt<0?'stock':STM.settleId,note:s.desc});sn++;ss+=s.amt}
+    msg=(n?`已套用 ${n} 筆交易到持股`:'')+(sn?`${n?'\n':''}已記錄 ${sn} 筆交割款（淨額 ${money(ss)}）到「${S.accounts.find(a=>a.id===STM.settleId)?.name||''}」`:'')+`${pl?`\n賣出已實現損益：${money(pl*rate(STM.currency))}${STM.recordPL?'（已記入收支）':''}`:''}`;tab='stocks';
   }
-  save();document.getElementById('stm').close();render();alert(msg);
+  save();document.getElementById('stm').close();render();alert(msg);showUndoBar(label);
 }
 function renderStm(){
   const body=document.getElementById('stmBody');const R=STM.rows||[];const mode=STM.mode;const sch=STMT_SCHEMA[mode];
@@ -1394,7 +1522,7 @@ function renderStm(){
   else opts=`<label class="muted">持有人 <select onchange="STM.memberId=this.value;stmCompute();renderStm()">${memberOpts(false).map(([v,l])=>`<option value="${v}" ${v===STM.memberId?'selected':''}>${esc(l)}</option>`).join('')}</select></label>
       <label class="muted">幣別 <select onchange="STM.currency=this.value">${CURRENCIES.map(c=>`<option ${c===STM.currency?'selected':''}>${c}</option>`).join('')}</select></label>`+
       (mode==='hold'?`<label class="row"><input type="checkbox" ${STM.replace?'checked':''} onchange="STM.replace=this.checked"> 以對帳單為準：移除此持有人不在清單上的持股</label>`
-      :`<label class="muted">交割帳戶 <select onchange="STM.settleId=this.value"><option value="">（不記錄交割款）</option>${S.accounts.map(a=>`<option value="${a.id}" ${a.id===STM.settleId?'selected':''}>${esc(a.name)}</option>`).join('')}</select></label>
+      :`<label class="muted">交割帳戶 <select onchange="STM.settleId=this.value;renderStm()"><option value="">（不記錄交割款）</option>${S.accounts.map(a=>`<option value="${a.id}" ${a.id===STM.settleId?'selected':''}>${esc(a.name)}</option>`).join('')}</select></label>
         <label class="row"><input type="checkbox" ${STM.recordPL?'checked':''} onchange="STM.recordPL=this.checked"> 賣出的已實現損益記入收支</label>`);
 
   if(isMoney&&(R.length||STM.src)){
@@ -1417,9 +1545,19 @@ function renderStm(){
       ${R.map((r,i)=>`<tr style="${r.on?'':'opacity:.45'}"><td><input type="checkbox" ${r.on?'checked':''} onchange="STM.rows[${i}].on=this.checked;renderStm()"></td><td><b>${esc(r.code)}</b></td><td>${esc(r.name)}</td>
         ${['shares','cost','price'].map(k=>`<td class="n"><input type="number" step="any" style="width:100px;text-align:right" value="${r[k]}" onchange="STM.rows[${i}].${k}=this.value===''?'':+this.value"></td>`).join('')}
         <td>${r.ex?'<span class="tag">更新</span>':'<span class="tag">新增</span>'}</td></tr>`).join('')}</tbody></table></div>`;
-  if(R.length&&mode==='trade')table=`<div class="tbl" style="max-height:44vh;overflow:auto"><table><thead><tr><th></th><th>日期</th><th>股票</th><th>買賣</th><th class="n">股數</th><th class="n">成交價</th><th class="n">手續費</th><th class="n">交易稅</th></tr></thead><tbody>
-      ${R.map((r,i)=>`<tr style="${r.on?'':'opacity:.45'}"><td><input type="checkbox" ${r.on?'checked':''} onchange="STM.rows[${i}].on=this.checked;renderStm()"></td><td>${r.date}</td><td><b>${esc(r.code)}</b> ${esc(r.name)}${r.dup?' <span class="tag">可能重複</span>':''}</td>
-        <td class="${r.side==='buy'?'neg':'pos'}">${r.side==='buy'?'買進':'賣出'}</td><td class="n">${r.shares.toLocaleString()}</td><td class="n">${r.price}</td><td class="n">${r.fee}</td><td class="n">${r.tax}</td></tr>`).join('')}</tbody></table></div>`;
+  if(R.length&&mode==='trade')table=`${STM.broker?'<b style="font-size:14px">📑 買賣明細</b> <span class="muted" style="font-size:12px">依序套用到持股、重算平均成本（含手續費）</span>':''}
+      <div class="tbl" style="max-height:44vh;overflow:auto"><table><thead><tr><th></th><th>日期</th><th>代號</th><th>名稱</th><th>買賣</th><th class="n">股數</th><th class="n">成交價</th><th class="n">手續費</th><th class="n">交易稅</th>${STM.broker?'<th class="n">應收付</th>':''}</tr></thead><tbody>
+      ${R.map((r,i)=>`<tr style="${r.on?'':'opacity:.45'}"><td><input type="checkbox" ${r.on?'checked':''} onchange="STM.rows[${i}].on=this.checked;renderStm()"></td><td>${r.date}</td>
+        <td>${STM.broker?`<input value="${esc(r.code)}" placeholder="代號" style="width:72px;${r.code?'':'border-color:var(--neg)'}" onchange="STM.rows[${i}].code=this.value.trim().toUpperCase();renderStm()">`:`<b>${esc(r.code)}</b>`}</td>
+        <td>${esc(r.name)}${r.dup?' <span class="tag">可能重複</span>':''}</td>
+        <td class="${r.side==='buy'?'neg':'pos'}">${r.side==='buy'?'買進':'賣出'}</td><td class="n">${r.shares.toLocaleString()}</td><td class="n">${r.price}</td><td class="n">${r.fee}</td><td class="n">${r.tax}</td>
+        ${STM.broker?`<td class="n ${r.side==='buy'?'neg':'pos'}">${(r.side==='buy'?-r.net:r.net).toLocaleString()}</td>`:''}</tr>`).join('')}</tbody></table></div>`;
+  if(mode==='trade'&&STM.settle&&STM.settle.length){const SS=STM.settle;
+    table+=`<div style="margin-top:12px"><b style="font-size:14px">💰 交割資料</b> <span class="muted" style="font-size:12px">選了「交割帳戶」才會記錄：依交割日記成「交割帳戶 ⇄ 股票」轉帳（不算收支）。銀行對帳單已匯入過的同一筆會標示可能重複。</span></div>
+      <div class="tbl" style="max-height:34vh;overflow:auto"><table><thead><tr><th><input type="checkbox" ${SS.every(s=>s.on)?'checked':''} onchange="STM.settle.forEach(s=>s.on=this.checked);renderStm()"></th><th>交易日</th><th>交割日</th><th>說明</th><th class="n">應收(+)／付(-)</th></tr></thead><tbody>
+      ${SS.map((s,i)=>`<tr style="${s.on?'':'opacity:.45'}"><td><input type="checkbox" ${s.on?'checked':''} onchange="STM.settle[${i}].on=this.checked;renderStm()"></td><td>${s.tdate}</td><td>${s.sdate}</td>
+        <td><input value="${esc(s.desc)}" style="min-width:170px" onchange="STM.settle[${i}].desc=this.value">${s.dup?' <span class="tag">可能重複</span>':''}</td><td class="n ${s.amt<0?'neg':'pos'}">${s.amt.toLocaleString()}</td></tr>`).join('')}
+      <tr><td></td><td colspan="3"><b>合計（勾選）</b></td><td class="n"><b>${SS.filter(s=>s.on).reduce((a,s)=>a+s.amt,0).toLocaleString()}</b></td></tr></tbody></table></div>`;}
 
   // 欄位對應＋範例資料＋儲存格式
   let mapping='';
@@ -1448,7 +1586,7 @@ function renderStm(){
   const tip={bank:'網路銀行下載的 <b>PDF／CSV／Excel</b> 對帳單都可以；也可以從網銀頁面把交易明細整段複製貼上。讀錯時可用「欄位對應」自行校正並儲存格式。',
     card:'信用卡電子帳單（PDF／CSV／Excel／貼上文字）。讀錯或讀不到時，可在「欄位對應」自行指定日期、金額欄並儲存格式。',
     hold:'券商 App 或網站的「庫存／持股明細」匯出檔（CSV／Excel／PDF），或直接複製表格貼上。',
-    trade:'券商的「成交明細／對帳單」，會依時間順序套用買進賣出、重算平均成本（含手續費）。'}[mode];
+    trade:'券商的「成交明細」或<b>月對帳單</b>（PDF／貼上文字，例如富邦證券現貨對帳單）：讀取交割資料與買賣明細，依時間順序套用買進賣出、重算平均成本（含手續費）。'}[mode];
   const ph={bank:'例：\n115/10/01  薪資轉入  68,000  245,000\n115/10/03  國泰世華信用卡款  18,650  226,350',
     card:'例：\n115/10/03  115/10/05  全聯福利中心  1,234\n115/10/08  115/10/10  NETFLIX.COM  490',
     hold:'例（可從券商網頁複製表格）：\n代號\t名稱\t庫存股數\t成本均價\t現價\n2330\t台積電\t1000\t580.5\t1050',
@@ -1465,7 +1603,8 @@ function renderStm(){
   <div>${STM.status||''}</div>
   ${mapping}
   ${table}
-  ${sel.length?`<div class="row"><span class="sp"></span><span class="muted">匯入前會自動保留還原點</span><button type="button" class="btn" onclick="stmCommit()">${isMoney?`匯入 ${sel.length} 筆`:mode==='hold'?`更新 ${sel.length} 檔持股`:`套用 ${sel.length} 筆交易`}</button></div>`:''}`;
+  ${sel.length||(mode==='trade'&&STM.settle&&STM.settle.some(s=>s.on))?`<div class="row"><span class="sp"></span><span class="muted">匯入前會自動保留還原點</span><button type="button" class="btn" onclick="stmCommit()">${isMoney?`匯入 ${sel.length} 筆`:mode==='hold'?`更新 ${sel.length} 檔持股`
+    :[sel.length?`套用 ${sel.length} 筆交易`:'',STM.settle&&STM.settleId&&STM.settle.some(s=>s.on)?`記錄 ${STM.settle.filter(s=>s.on).length} 筆交割款`:''].filter(Boolean).join('＋')||'套用'}</button></div>`:''}`;
   const dz=document.getElementById('stmDrop');
   dz.ondragover=e=>{e.preventDefault();dz.classList.add('over')};dz.ondragleave=()=>dz.classList.remove('over');
   dz.ondrop=e=>{e.preventDefault();dz.classList.remove('over');stmFile(e.dataTransfer.files[0])};
@@ -1518,6 +1657,7 @@ function loadSample(){
 }
 
 function render(){
+  updUndoBtn();
   const ms=new Set(S.txns.map(t=>ymOf(t.date)));ms.add(ymOf(todayStr()));ms.add(curYm);
   const sel=document.getElementById('monthSel');
   sel.innerHTML=[...ms].sort().reverse().map(m=>`<option ${m===curYm?'selected':''}>${m}</option>`).join('');
