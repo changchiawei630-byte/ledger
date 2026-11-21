@@ -96,6 +96,9 @@ svg text{fill:var(--muted);font-size:11px}
 header{padding-top:env(safe-area-inset-top)}
 main{padding-bottom:calc(16px + env(safe-area-inset-bottom))}
 #installBtn{display:none}
+#updBar{display:none;position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:20;max-width:560px;margin:0 auto;
+  background:var(--card);border:1px solid var(--accent);border-radius:12px;padding:10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.18);align-items:center;gap:10px}
+#updBar.show{display:flex}
 @media (max-width:600px){
   .top{padding:10px 12px 0;gap:8px}
   .top h1{font-size:16px}
@@ -127,6 +130,7 @@ main{padding-bottom:calc(16px + env(safe-area-inset-bottom))}
   <nav id="nav"></nav>
 </header>
 <main id="main"></main>
+<div id="updBar" role="status"></div>
 <dialog id="dlg"><form id="dlgForm" method="dialog"></form></dialog>
 <dialog id="imp"><div class="imp" id="impBody"></div></dialog>
 <dialog id="ext"><div class="imp" id="extBody"></div></dialog>
@@ -152,9 +156,10 @@ function shiftYm(ym,k){let[y,m]=ym.split('-').map(Number);m+=k;while(m<1){m+=12;
    2) 在 MIGRATIONS 加一個對應的函式，把舊資料轉成新格式
    舊備份檔匯入、或瀏覽器內的舊資料，都會自動依序升級，不會遺失。
    （儲存鍵 KEY 請勿更改，否則會讀不到既有資料）*/
-const APP_VERSION='1.6.0';   // 改版時同步修改 sw.js 的 VERSION，手機才會更新快取
+const APP_VERSION='1.6.1';   // 改版時同步修改 sw.js 的 VERSION，手機才會更新快取
 const SCHEMA_VERSION=2;
 const CHANGELOG=[
+  ['1.6.1','自動更新：開啟 App 時檢查新版本並在畫面下方提示「立即更新」、設定頁可手動檢查更新；下載檔版本會提示改用網址'],
   ['1.6.0','對帳單自行校正：自動判斷失敗時改用手動欄位對應（可從右邊數欄位）、指定金額方向、逐筆修改日期金額、儲存各家格式並自動套用；信用卡帳單也支援'],
   ['1.5.1','銀行對帳單支援合庫等「電子綜合對帳單」：金額與手續費分行列出的轉帳明細、以帳戶總覽餘額校正'],
   ['1.5.0','可安裝成手機 App（PWA）：主畫面圖示、全螢幕開啟、離線可用；手機版面調整'],
@@ -589,7 +594,9 @@ const VIEWS={
       <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="openExt()">📥 從其他記帳 App 匯入（CWMoney 等）</button></div>
       <div class="row" style="margin-top:10px"><button class="btn ghost" onclick="loadSample()">載入範例資料</button><button class="danger btn" onclick="if(confirm('清除全部資料？建議先匯出備份。')){snapshot();S=defaultState();save();render()}">清除全部</button></div></div>
     <div class="card"><h3>版本資訊</h3><p style="margin-top:0">App 版本 <b>${APP_VERSION}</b>・資料版本 <b>${S.version}</b></p>
-      <p class="muted" style="font-size:13px">更新 App 時：先匯出備份 → 用新版檔案取代舊檔 → 開啟後資料會自動沿用並升級；若看不到資料，匯入剛剛的備份即可。舊版備份檔也能匯入新版。</p>
+      ${PWA.http?`<div class="row"><button class="btn ghost" onclick="checkUpdate(true)">🔄 檢查更新</button><span class="muted" style="font-size:13px" id="updMsg">${UPD.latest&&cmpVer(UPD.latest,APP_VERSION)>0?`有新版本 v${esc(UPD.latest)}`:UPD.checked?'已是最新版本':'開啟 App 時會自動檢查'}</span></div>
+        <p class="muted" style="font-size:13px">網站有新版本時，下方會出現「有新版本」提示，按「立即更新」即可，資料不受影響。</p>`
+      :`<p class="neg" style="font-size:13px">⚠️ 你現在開的是下載到電腦的檔案（網址列是 file:///），這個版本<b>不會自動更新</b>。請改用 App 的網址開啟（例如 https://你的帳號.github.io/ledger/），並先在這裡「匯出備份」，再到網址版「匯入備份」，資料才會搬過去。</p>`}
       <div class="grid" style="gap:4px;font-size:13px">${CHANGELOG.map(([v,d])=>`<div><span class="tag">v${v}</span> ${esc(d)}</div>`).join('')}</div></div>
     <div class="card"><h3>外觀</h3><div class="row"><button class="btn ghost" onclick="setTheme('')">跟隨系統</button><button class="btn ghost" onclick="setTheme('light')">淺色</button><button class="btn ghost" onclick="setTheme('dark')">深色</button></div></div></div>`;
   }
@@ -1528,6 +1535,39 @@ if(PWA.http&&'serviceWorker' in navigator)navigator.serviceWorker.register('sw.j
 if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().then(p=>{PWA.persisted=p}).catch(()=>{});
 addEventListener('beforeinstallprompt',e=>{e.preventDefault();PWA.prompt=e;document.getElementById('installBtn').style.display='';if(tab==='settings')render()});
 addEventListener('appinstalled',()=>{PWA.prompt=null;document.getElementById('installBtn').style.display='none';if(tab==='settings')render()});
+
+/* ---------- 自動更新 ----------
+   開啟 App、切回 App、以及每小時，向網站抓最新的 index.html 比對版本號；有新版就在畫面下方提示。 */
+const UPD={latest:null,checked:false,busy:false};
+function cmpVer(a,b){const x=String(a).split('.').map(Number),y=String(b).split('.').map(Number);for(let i=0;i<3;i++){const d=(x[i]||0)-(y[i]||0);if(d)return d}return 0}
+async function checkUpdate(manual){
+  if(!PWA.http||UPD.busy)return;UPD.busy=true;
+  const msg=t=>{const el=document.getElementById('updMsg');if(el)el.textContent=t};
+  if(manual)msg('檢查中…');
+  try{
+    const html=await(await fetch('./index.html?v='+Date.now(),{cache:'no-store'})).text();
+    const v=(html.match(/APP_VERSION='([^']+)'/)||[])[1];
+    UPD.checked=true;UPD.latest=v||null;
+    if(v&&cmpVer(v,APP_VERSION)>0){showUpdBar(v);msg(`有新版本 v${v}`)}
+    else if(manual)msg('已是最新版本 v'+APP_VERSION);
+  }catch(e){if(manual)msg('無法連線，請稍後再試')}
+  UPD.busy=false;
+}
+function showUpdBar(v){
+  const b=document.getElementById('updBar');
+  b.innerHTML=`<span style="flex:1">🎉 有新版本 <b>v${esc(v)}</b>（目前 v${APP_VERSION}）</span><button class="btn" onclick="applyUpdate()">立即更新</button><button class="btn ghost" onclick="document.getElementById('updBar').classList.remove('show')">稍後</button>`;
+  b.classList.add('show');
+}
+async function applyUpdate(){
+  const b=document.getElementById('updBar');b.innerHTML='<span>⏳ 更新中…</span>';
+  try{const reg=await navigator.serviceWorker?.getRegistration();if(reg)await reg.update()}catch(e){}
+  location.reload();
+}
+if(PWA.http){
+  setTimeout(()=>checkUpdate(false),1500);
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')checkUpdate(false)});
+  setInterval(()=>{if(document.visibilityState==='visible')checkUpdate(false)},3600e3);
+}
 async function installApp(){
   if(PWA.prompt){PWA.prompt.prompt();const r=await PWA.prompt.userChoice;if(r.outcome==='accepted'){PWA.prompt=null;document.getElementById('installBtn').style.display='none'}return}
   alert(PWA.ios?'iPhone／iPad：請用 Safari 開啟本頁 → 點下方「分享」按鈕 → 選「加入主畫面」。'

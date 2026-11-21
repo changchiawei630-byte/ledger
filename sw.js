@@ -1,6 +1,6 @@
 // 家庭記帳本 Service Worker：讓 App 可安裝、離線可用
 // 每次更新 App 時請一併修改 VERSION（與 index.html 的 APP_VERSION 相同），舊快取才會被清除
-const VERSION = 'ledger-1.6.0';
+const VERSION = 'ledger-1.6.1';
 const RUNTIME = 'ledger-runtime';   // PDF／Excel 解析元件等外部檔案，第一次使用後快取起來
 const SHELL = ['./', './index.html', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png'];
@@ -21,9 +21,9 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
 
-  // 頁面：先抓網路（拿到最新版），沒網路時用快取
+  // 頁面：先抓網路（拿到最新版，並略過瀏覽器的暫存），沒網路時用快取
   if (req.mode === 'navigate') {
-    e.respondWith(fetch(req).then(res => {
+    e.respondWith(fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' }).then(res => {
       const copy = res.clone(); caches.open(VERSION).then(c => c.put('./index.html', copy));
       return res;
     }).catch(() => caches.match('./index.html')));
