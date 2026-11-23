@@ -99,6 +99,7 @@ main{padding-bottom:calc(16px + env(safe-area-inset-bottom))}
 #updBar,#undoBar{display:none;position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:20;max-width:560px;margin:0 auto;
   background:var(--card);border:1px solid var(--accent);border-radius:12px;padding:10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.18);align-items:center;gap:10px}
 #updBar.show,#undoBar.show{display:flex}
+a.acl{color:var(--text);text-decoration:none;font-weight:600}a.acl:hover{color:var(--accent)}a.acl:hover .muted{color:var(--accent)}
 .btn.mv{padding:3px 8px;min-width:30px}.btn.mv:disabled{opacity:.3;cursor:default}
 #undoBar{z-index:21}
 @media (max-width:600px){
@@ -160,9 +161,10 @@ function shiftYm(ym,k){let[y,m]=ym.split('-').map(Number);m+=k;while(m<1){m+=12;
    2) 在 MIGRATIONS 加一個對應的函式，把舊資料轉成新格式
    舊備份檔匯入、或瀏覽器內的舊資料，都會自動依序升級，不會遺失。
    （儲存鍵 KEY 請勿更改，否則會讀不到既有資料）*/
-const APP_VERSION='1.7.1';   // 改版時同步修改 sw.js 的 VERSION，手機才會更新快取
+const APP_VERSION='1.7.2';   // 改版時同步修改 sw.js 的 VERSION，手機才會更新快取
 const SCHEMA_VERSION=2;
 const CHANGELOG=[
+  ['1.7.2','單一帳戶／信用卡明細：在帳戶或信用卡頁點名稱，或在收支頁選帳戶，可看該帳戶本月或全部期間的進出與每筆後餘額'],
   ['1.7.1','股價線上更新：開啟 App 時自動抓台股（上市、上櫃、ETF）與美股最新收盤價，股票頁可手動「更新股價」'],
   ['1.7.0','對帳單／帳單可上傳截圖或照片（可多張），在裝置上辨識文字後匯入；帳戶、股票、貸款、信用卡、保險等清單可上下移動調整順序；總覽新增「各成員財產」比較與個別成員明細'],
   ['1.6.4','收支明細依成員篩選時，列出動到該成員所有帳戶／信用卡的紀錄（含被轉入的一方），並標示轉入／轉出與合計'],
@@ -204,7 +206,7 @@ function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){alert('
 let S=load();
 let tab='overview';
 let curYm=ymOf(todayStr());
-let txFilter={member:'',type:''};
+let txFilter={member:'',type:'',account:'',range:'month'};   // account：帳戶 id 或 'card:<id>'；range：month＝本月、all＝全部期間
 
 const memberName=id=>S.members.find(m=>m.id===id)?.name||'家庭共同';
 const memberOpts=(allowAll=true)=>[...(allowAll?[['','家庭共同']]:[]),...S.members.map(m=>[m.id,m.name])];
@@ -224,20 +226,32 @@ const conv=(v,from,to)=>{const r=rate(to);return r?v*rate(from)/r:0};
 const toAmt=t=>t.toAmount!==''&&t.toAmount!=null?+t.toAmount:conv(+t.amount||0,acctCur(t.accountId),acctCur(t.toAccountId));
 
 /* ---------- 計算 ---------- */
-function accountBalance(a,upto){  // 以帳戶本身幣別計；upto＝只算到某日（含）
-  const cur=a.currency||'TWD';let b=+a.opening||0;
-  for(const t of S.txns){
-    if(upto&&t.date>upto)continue;
-    if(t.type==='transfer'){
-      if(t.accountId===a.id)b-=(+t.amount||0)+(+t.fee||0);
-      if(t.toAccountId===a.id)b+=toAmt(t);
-    }else if(t.accountId===a.id){
-      const v=(t.currency||'TWD')===cur?+t.amount:conv(twd(t),'TWD',cur);
-      b+=t.type==='income'?v:-v;
-    }
+// 一筆交易讓帳戶 a 增減多少（帳戶幣別）
+function acctDelta(t,a){
+  const cur=a.currency||'TWD';let b=0;
+  if(t.type==='transfer'){
+    if(t.accountId===a.id)b-=(+t.amount||0)+(+t.fee||0);
+    if(t.toAccountId===a.id)b+=toAmt(t);
+  }else if(t.accountId===a.id){
+    const v=(t.currency||'TWD')===cur?+t.amount:conv(twd(t),'TWD',cur);
+    b+=t.type==='income'?v:-v;
   }
   return b;
 }
+function accountBalance(a,upto){  // 以帳戶本身幣別計；upto＝只算到某日（含）
+  let b=+a.opening||0;
+  for(const t of S.txns){if(upto&&t.date>upto)continue;b+=acctDelta(t,a)}
+  return b;
+}
+// 帳戶明細用：每筆交易之後的餘額（依日期、同日依記錄順序）
+function runningBalances(a){
+  const idx=new Map(S.txns.map((t,i)=>[t,i]));
+  const L=S.txns.filter(t=>t.accountId===a.id||t.toAccountId===a.id).sort((x,y)=>x.date.localeCompare(y.date)||idx.get(x)-idx.get(y));
+  let b=+a.opening||0;const m=new Map();for(const t of L){b+=acctDelta(t,a);m.set(t.id,b)}
+  return{map:m,order:idx};
+}
+const txOnAcct=(t,id)=>String(id).startsWith('card:')?(t.cardId===id.slice(5)||t.toAccountId===id):(t.accountId===id||t.toAccountId===id);
+function viewAcct(id){txFilter={member:'',type:'',account:id,range:'month'};tab='txns';render();scrollTo(0,0)}
 const accountTWD=a=>accountBalance(a)*rate(a.currency);
 function loanCalc(l){
   const P=+l.principal||0,n=Math.round((+l.years||0)*12),r=(+l.rate||0)/100/12;
@@ -357,7 +371,7 @@ const ENT={
       {k:'currency',l:'幣別',t:'select',opts:curOpts},
       {k:'opening',l:'期初餘額（帳戶幣別）',t:'number'}],
     defaults:()=>({currency:'TWD'}),
-    cols:[['名稱',a=>esc(a.name)],['成員',a=>esc(memberName(a.memberId))],['類型',a=>`<span class="tag">${esc(a.type)}</span>`],
+    cols:[['名稱',a=>`<a href="javascript:void 0" class="acl" onclick="viewAcct('${a.id}')" title="查看這個帳戶的明細">${esc(a.name)} <span class="muted" style="font-size:12px">明細 ›</span></a>`],['成員',a=>esc(memberName(a.memberId))],['類型',a=>`<span class="tag">${esc(a.type)}</span>`],
       ['目前餘額',a=>fmtCur(accountBalance(a),a.currency),1],
       ['折合台幣',a=>(a.currency||'TWD')==='TWD'?'':`<span class="muted">${money(accountTWD(a))}</span>`,1]]},
   assets:{title:'房產 / 其他資產',fields:[
@@ -392,7 +406,7 @@ const ENT={
       {k:'name',l:'卡片名稱',t:'text',req:1},{k:'memberId',l:'持卡人',t:'select',opts:()=>memberOpts()},
       {k:'limit',l:'信用額度',t:'number'},{k:'bill',l:'本期帳單金額',t:'number'},
       {k:'dueDay',l:'每月繳款日（1-31）',t:'number',req:1},{k:'paid',l:'本期已繳清',t:'checkbox'}],
-    cols:[['卡片',c=>esc(c.name)],['持卡人',c=>esc(memberName(c.memberId))],['本期帳單',c=>money(+c.bill||0),1],
+    cols:[['卡片',c=>`<a href="javascript:void 0" class="acl" onclick="viewAcct('card:${c.id}')" title="查看這張卡的明細">${esc(c.name)} <span class="muted" style="font-size:12px">明細 ›</span></a>`],['持卡人',c=>esc(memberName(c.memberId))],['本期帳單',c=>money(+c.bill||0),1],
       [`${+curYm.slice(5)}月刷卡`,c=>money(monthTx(curYm).filter(t=>t.cardId===c.id&&t.type==='expense').reduce((s,t)=>s+twd(t),0)),1],
       ['額度使用',c=>c.limit?pct((+c.bill||0)/c.limit):'—',1],
       ['繳款日',c=>{const d=cardDueInfo(c);return`${d.date.getMonth()+1}/${d.date.getDate()}`+(c.paid?'':` <span class="${d.days<=5?'neg':'muted'}">(${d.days} 天後)</span>`)}],
@@ -609,9 +623,32 @@ const VIEWS={
   txns(){
     // 選成員時：該成員記的、或動到該成員帳戶／信用卡的都列出（含被轉入的一方）
     const fm=txFilter.member===''?null:txFilter.member==='_'?'':txFilter.member;
-    let l=monthTx(curYm);if(fm!==null)l=l.filter(t=>txTouches(t,fm));
+    // 單一帳戶／信用卡明細
+    const fa=txFilter.account||'';const isCardF=fa.startsWith('card:');
+    const A=fa&&!isCardF?S.accounts.find(a=>a.id===fa):null,C=isCardF?S.cards.find(c=>'card:'+c.id===fa):null;
+    if(fa&&!A&&!C)txFilter.account='';
+    const allTime=(A||C)&&txFilter.range==='all';
+    let l=allTime?[...S.txns]:monthTx(curYm);
+    if(A||C)l=l.filter(t=>txOnAcct(t,fa));
+    if(fm!==null)l=l.filter(t=>txTouches(t,fm));
     if(txFilter.type)l=l.filter(t=>t.type===txFilter.type);
-    l.sort((a,b)=>b.date.localeCompare(a.date));
+    const RB=A?runningBalances(A):null;
+    const ord=RB?RB.order:new Map(S.txns.map((t,i)=>[t,i]));
+    l.sort((a,b)=>b.date.localeCompare(a.date)||ord.get(b)-ord.get(a));
+    const acur=A?(A.currency||'TWD'):'TWD';
+    let acctHead='';
+    if(A||C){
+      const dl=l.map(t=>A?acctDelta(t,A):(t.cardId===C.id?(t.type==='income'?twd(t):-twd(t)):toAmt(t)));
+      const inS=dl.filter(v=>v>0).reduce((s,v)=>s+v,0),outS=dl.filter(v=>v<0).reduce((s,v)=>s-v,0);
+      const period=allTime?'全部期間':`${curYm}`;
+      acctHead=`<div class="card" style="margin-bottom:12px;padding:12px;background:var(--accent-soft)"><div class="row"><b style="font-size:16px">${A?'🏦':'💳'} ${esc(A?A.name:C.name)}</b>
+        <span class="muted">${esc(memberName((A||C).memberId))}${A?`・${esc(A.type||'')}${acur!=='TWD'?'・'+acur:''}`:''}</span><span class="sp"></span>
+        <div class="seg" style="margin:0">${[['month','本月'],['all','全部期間']].map(([v,n])=>`<button type="button" class="${(txFilter.range||'month')===v?'on':''}" onclick="txFilter.range='${v}';render()">${n}</button>`).join('')}</div>
+        <button class="btn ghost mini" onclick="txFilter.account='';render()">✕ 看全部帳戶</button></div>
+        <div class="row" style="margin-top:8px;font-size:14px">${A?`<span>期初餘額 <b>${fmtCur(+A.opening||0,acur)}</b></span>${!allTime?`<span>${curYm} 月初 <b>${fmtCur(accountBalance(A,shiftYm(curYm,-1)+'-31'),acur)}</b></span>`:''}`:`<span>本期帳單 <b>${money(+C.bill||0)}</b>${C.paid?'（已繳）':''}</span>`}
+          <span class="pos">${A?'存入／轉入':'退款／繳款'} ${A?fmtCur(inS,acur):money(inS)}</span><span class="neg">${A?'支出／轉出':'刷卡消費'} ${A?fmtCur(outS,acur):money(outS)}</span>
+          ${A?`<span class="sp"></span><span>目前餘額 <b style="font-size:16px">${fmtCur(accountBalance(A),acur)}</b></span>`:''}</div></div>`;
+    }
     const inc=sumType(l,'income'),exp=sumType(l,'expense'),trN=l.filter(t=>t.type==='transfer').length;
     const acName=id=>id==='stock'?'📈股票投資':String(id||'').startsWith('card:')?'💳'+(S.cards.find(c=>'card:'+c.id===id)?.name||''):(S.accounts.find(a=>a.id===id)?.name||'');
     const amtCell=t=>{
@@ -621,18 +658,25 @@ const VIEWS={
         return`<td class="n">${dir}${fmtCur(+t.amount,fc)}${fc!==tc?`<div class="muted" style="font-size:12px">→ ${fmtCur(toAmt(t),tc)}</div>`:''}${+t.fee?`<div class="muted" style="font-size:12px">手續費 ${fmtCur(+t.fee,fc)}</div>`:''}</td>`}
       const v=t.type==='income'?twd(t):-twd(t);const fx=(t.currency||'TWD')!=='TWD';
       return`<td class="n ${v>=0?'pos':'neg'}">${v>0?'+':''}${money(v)}${fx?`<div class="muted" style="font-size:12px">${fmtCur(+t.amount,t.currency)} @${txRate(t)}</div>`:''}</td>`};
-    return`<div class="card"><div class="row" style="margin-bottom:12px"><h3 style="margin:0">${curYm} 收支明細</h3>
+    const amtCell0=amtCell;
+    const cell=t=>{if(!A)return amtCell0(t);const v=acctDelta(t,A);
+      return`<td class="n ${v>=0?'pos':'neg'}">${v>0?'+':''}${fmtCur(v,acur)}${+t.fee&&t.accountId===A.id?`<div class="muted" style="font-size:12px">含手續費 ${fmtCur(+t.fee,acur)}</div>`:''}</td><td class="n muted">${RB.map.has(t.id)?fmtCur(RB.map.get(t.id),acur):''}</td>`};
+    return`<div class="card"><div class="row" style="margin-bottom:12px"><h3 style="margin:0">${allTime?'全部期間':curYm} ${A||C?'帳戶明細':'收支明細'}</h3>
+      <select onchange="txFilter.account=this.value;txFilter.range='month';render()" title="帳戶"><option value="">全部帳戶</option>
+        <optgroup label="帳戶">${S.accounts.map(a=>`<option value="${a.id}" ${fa===a.id?'selected':''}>${esc(a.name)}</option>`).join('')}</optgroup>
+        ${S.cards.length?`<optgroup label="信用卡">${S.cards.map(c=>`<option value="card:${c.id}" ${fa==='card:'+c.id?'selected':''}>💳 ${esc(c.name)}</option>`).join('')}</optgroup>`:''}</select>
       <select onchange="txFilter.member=this.value;render()"><option value="">全部成員</option>${S.members.map(m=>`<option value="${m.id}" ${txFilter.member===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}<option value="_" ${txFilter.member==='_'?'selected':''}>家庭共同</option></select>
       <select onchange="txFilter.type=this.value;render()">${[['','全部類型'],['expense','支出'],['income','收入'],['transfer','轉帳']].map(([v,n])=>`<option value="${v}" ${txFilter.type===v?'selected':''}>${n}</option>`).join('')}</select>
       <span class="sp"></span><span class="pos">收入 ${money(inc)}</span><span class="neg">支出 ${money(exp)}</span>${trN?`<span class="muted">轉帳 ${trN} 筆${fm!==null?(()=>{let i=0,o=0;l.filter(t=>t.type==='transfer').forEach(t=>{const fi=idOwner(t.accountId)===fm,ti=idOwner(t.toAccountId)===fm;
         if(ti&&!fi)i+=String(t.toAccountId).startsWith('card:')?toAmt(t):toAmt(t)*rate(acctCur(t.toAccountId));else if(fi&&!ti)o+=(+t.amount)*rate(acctCur(t.accountId))});
         return i||o?`（轉入 ${money(i)}・轉出 ${money(o)}）`:''})():''}</span>`:''}<button class="btn" onclick="openForm('txns')">＋ 記一筆</button></div>
+      ${acctHead}
       ${fm!==null?`<p class="muted" style="margin:-4px 0 10px;font-size:12px">顯示「${esc(memberName(fm))}」記的收支，以及動到${esc(memberName(fm))}帳戶／信用卡的所有紀錄（包含別人轉入、代刷卡）。</p>`:''}
-      ${l.length?`<div class="tbl"><table><thead><tr><th>日期</th><th>分類</th><th>成員</th><th>帳戶</th><th>備註</th><th class="n">金額</th><th></th></tr></thead><tbody>
-      ${l.map(t=>`<tr><td>${esc(t.date.slice(5))}</td><td><span class="tag">${esc(t.type==='transfer'?'⇄ 轉帳':t.category)}</span></td><td>${esc(txMembers(t))}</td>
+      ${l.length?`<div class="tbl"><table><thead><tr><th>日期</th><th>分類</th><th>成員</th><th>帳戶</th><th>備註</th><th class="n">${A?'存入(+)／支出(-)':'金額'}</th>${A?'<th class="n">餘額</th>':''}<th></th></tr></thead><tbody>
+      ${l.map(t=>`<tr><td style="white-space:nowrap">${esc(allTime?t.date:t.date.slice(5))}</td><td><span class="tag">${esc(t.type==='transfer'?'⇄ 轉帳':t.category)}</span></td><td>${esc(txMembers(t))}</td>
         <td class="muted">${t.type==='transfer'?`${esc(acName(t.accountId))} → ${esc(acName(t.toAccountId))}`:esc(acName(t.accountId))+(t.cardId?'💳'+esc(S.cards.find(c=>c.id===t.cardId)?.name||''):'')}</td><td class="muted">${esc(t.note)}</td>
-        ${amtCell(t)}<td><button class="btn ghost mini" onclick="openForm('txns','${t.id}')">編輯</button></td></tr>`).join('')}
-      </tbody></table></div>`:'<div class="empty">這個月還沒有紀錄</div>'}</div>`;
+        ${cell(t)}<td><button class="btn ghost mini" onclick="openForm('txns','${t.id}')">編輯</button></td></tr>`).join('')}
+      </tbody></table></div>`:`<div class="empty">${A||C?(allTime?'這個帳戶還沒有任何紀錄':'這個帳戶本月沒有紀錄，可切換「全部期間」查看'):'這個月還沒有紀錄'}</div>`}</div>`;
   },
   accounts(){const T=totals();return`<div class="grid">${section('accounts',`<div class="row" style="margin-bottom:10px"><p class="muted" style="margin:0;flex:1">存款合計（折合台幣）<b>${money(T.cash)}</b>，其中可動用（非定存）${money(T.liquid)}${T.fxCash?`、外幣 ${money(T.fxCash)}`:''}。餘額＝期初餘額＋收支＋轉入－轉出。</p>
       <button class="btn ghost" onclick="openStm('bank')">🏦 匯入銀行對帳單</button><button class="btn ghost" onclick="openTransfer()">⇄ 轉帳／換匯</button></div>`)}
