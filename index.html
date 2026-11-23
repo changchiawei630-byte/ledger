@@ -160,9 +160,10 @@ function shiftYm(ym,k){let[y,m]=ym.split('-').map(Number);m+=k;while(m<1){m+=12;
    2) 在 MIGRATIONS 加一個對應的函式，把舊資料轉成新格式
    舊備份檔匯入、或瀏覽器內的舊資料，都會自動依序升級，不會遺失。
    （儲存鍵 KEY 請勿更改，否則會讀不到既有資料）*/
-const APP_VERSION='1.7.0';   // 改版時同步修改 sw.js 的 VERSION，手機才會更新快取
+const APP_VERSION='1.7.1';   // 改版時同步修改 sw.js 的 VERSION，手機才會更新快取
 const SCHEMA_VERSION=2;
 const CHANGELOG=[
+  ['1.7.1','股價線上更新：開啟 App 時自動抓台股（上市、上櫃、ETF）與美股最新收盤價，股票頁可手動「更新股價」'],
   ['1.7.0','對帳單／帳單可上傳截圖或照片（可多張），在裝置上辨識文字後匯入；帳戶、股票、貸款、信用卡、保險等清單可上下移動調整順序；總覽新增「各成員財產」比較與個別成員明細'],
   ['1.6.4','收支明細依成員篩選時，列出動到該成員所有帳戶／信用卡的紀錄（含被轉入的一方），並標示轉入／轉出與合計'],
   ['1.6.3','↩ 復原：匯入對帳單／帳單／備份或清除資料前自動保留還原點（最多 5 個），匯入後下方出現「復原」、標題列常駐復原鈕，設定頁可選擇復原到哪一步'],
@@ -373,7 +374,7 @@ const ENT={
       {k:'price',l:'目前股價（原幣）',t:'number',req:1},{k:'dps',l:'每股年配息（估，原幣）',t:'number'}],
     defaults:()=>({currency:'TWD'}),
     cols:[['持有人',s=>esc(memberName(s.memberId))],['股票',s=>`<b>${esc(s.symbol)}</b> ${esc(s.name)}${(s.currency||'TWD')!=='TWD'?` <span class="tag">${esc(s.currency)}</span>`:''}`],
-      ['股數',s=>(+s.shares).toLocaleString(),1],['成本',s=>(+s.cost).toLocaleString(),1],['現價',s=>(+s.price).toLocaleString(),1],
+      ['股數',s=>(+s.shares).toLocaleString(),1],['成本',s=>(+s.cost).toLocaleString(),1],['現價',s=>(+s.price).toLocaleString()+(s.priceDate?`<div class="muted" style="font-size:11px">${esc(s.priceDate.slice(5).replace('-','/'))}</div>`:''),1],
       ['市值',s=>money(stockMV(s)),1],
       ['損益',s=>{const p=stockMV(s)-stockCost(s),r=stockCost(s)?p/stockCost(s):0;return`<span class="${p>=0?'pos':'neg'}">${money(p)} (${pct(r)})</span>`},1],
       ['年股利',s=>money((+s.shares||0)*(+s.dps||0)*rate(s.currency)),1]]},
@@ -637,8 +638,13 @@ const VIEWS={
       <button class="btn ghost" onclick="openStm('bank')">🏦 匯入銀行對帳單</button><button class="btn ghost" onclick="openTransfer()">⇄ 轉帳／換匯</button></div>`)}
     ${section('assets',`<p class="muted">房屋、汽車等資產估值合計 <b>${money(T.other)}</b>，會計入家庭淨資產。</p>`)}</div>`},
   stocks(){const mv=S.stocks.reduce((s,x)=>s+stockMV(x),0),c=S.stocks.reduce((s,x)=>s+stockCost(x),0);
-    return section('stocks',`<div class="row" style="margin-bottom:10px"><p class="muted" style="margin:0;flex:1">總市值 <b>${money(mv)}</b>・總成本 ${money(c)}・未實現損益 <b class="${mv-c>=0?'pos':'neg'}">${money(mv-c)} (${pct(c?(mv-c)/c:0)})</b>　股價可點「編輯」或匯入最新庫存更新。</p>
-      <button class="btn ghost" onclick="openStm('hold')">📈 匯入證券庫存</button><button class="btn ghost" onclick="openStm('trade')">📑 匯入交易明細</button></div>`)},
+    const pu=S.meta.priceUpdated?new Date(S.meta.priceUpdated).toLocaleString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
+    return section('stocks',`<div class="row" style="margin-bottom:10px"><p class="muted" style="margin:0;flex:1">總市值 <b>${money(mv)}</b>・總成本 ${money(c)}・未實現損益 <b class="${mv-c>=0?'pos':'neg'}">${money(mv-c)} (${pct(c?(mv-c)/c:0)})</b></p>
+      <button class="btn ghost" onclick="openStm('hold')">📈 匯入證券庫存</button><button class="btn ghost" onclick="openStm('trade')">📑 匯入交易明細</button></div>
+      <div class="row" style="margin-bottom:10px;font-size:13px"><button class="btn" ${PX.busy?'disabled':''} onclick="updatePrices(true)">${PX.busy?'⏳ 更新中…':'🔄 更新股價'}</button>
+        <span class="muted">${PX.msg&&!PX.busy?PX.msg:pu?`上次更新 ${pu}${S.meta.priceDate?`（${S.meta.priceDate} 收盤價）`:''}`:'連上網即可自動抓最新收盤價（台股、美股）'}</span><span class="sp"></span>
+        <label class="row muted" style="gap:4px"><input type="checkbox" ${S.meta.autoPrice!==false?'checked':''} onchange="S.meta.autoPrice=this.checked;save();if(this.checked)updatePrices(false)"> 開啟 App 時自動更新</label></div>
+      <p class="muted" style="margin:0 0 10px;font-size:12px">股價來源 FinMind／證交所，只會送出股票代號。台股代號填數字（例：2330、0050），美股請把幣別設為 USD、代號填英文（例：AAPL）。其他市場請點「編輯」手動輸入。</p>`)},
   loans(){const T=totals();return section('loans',`<p class="muted">剩餘本金合計 <b>${money(T.loan)}</b>・每月應繳 <b>${money(T.loanPmt)}</b>（以本息平均攤還估算）</p>`)},
   cards(){const T=totals();return section('cards',`<div class="row" style="margin-bottom:10px"><p class="muted" style="margin:0;flex:1">未繳卡費合計 <b>${money(T.card)}</b>。每期帳單出來後，可直接匯入電子帳單，或手動編輯金額並取消「已繳」。</p>
       <button class="btn ghost" onclick="openImport()">📄 匯入信用卡帳單</button></div>`)},
@@ -737,6 +743,55 @@ async function importData(f){
     snapshot('匯入備份檔 '+(f.name||''));S=next;save();render();alert('匯入完成');showUndoBar('已匯入備份檔');
   }catch(e){alert('匯入失敗：'+(e instanceof SyntaxError||!e.message?'檔案格式不正確，請選擇從本 App 匯出的 .json 備份檔':e.message))}
 }
+/* ---- 股價線上更新：台股（上市、上櫃、ETF）與美股，取最近一個交易日收盤價 ----
+   來源：FinMind（api.finmindtrade.com），台股失敗時改用證交所；只會送出股票代號，不會送出你的持股或金額 */
+const PX={busy:false,msg:''};
+const FINMIND='https://api.finmindtrade.com/api/v4/data';
+async function fetchJSON(u){const r=await fetch(u,{cache:'no-store'});if(r.status===402)throw new Error('查詢太頻繁，請一小時後再試');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
+async function quoteOf(sym,cur){
+  const start=new Date(Date.now()-20*864e5).toISOString().slice(0,10);
+  sym=sym.replace(/\.(TWO?|US)$/,'');
+  if(cur==='TWD'&&/^\d{4,6}[A-Z]?$/.test(sym)){
+    try{const j=await fetchJSON(`${FINMIND}?dataset=TaiwanStockPrice&data_id=${sym}&start_date=${start}`);
+      const d=(j.data||[]).filter(x=>+x.close>0).pop();if(d)return{price:+d.close,date:d.date}}catch(e){if(/頻繁/.test(e.message))throw e}
+    // 備援：證交所（上市股票、ETF）
+    const j=await fetchJSON(`https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?stockNo=${sym}&response=json`);
+    const d=(j.data||[]).filter(r=>isFinite(parseAmt(r[6]))).pop();if(d){const p=d[0].split('/');return{price:parseAmt(d[6]),date:toISO(p[0],p[1],p[2])}}
+    return null;
+  }
+  if(cur==='USD'&&/^[A-Z][A-Z.\-]{0,6}$/.test(sym)){
+    const j=await fetchJSON(`${FINMIND}?dataset=USStockPrice&data_id=${sym}&start_date=${start}`);
+    const d=(j.data||[]).filter(x=>+x.Close>0).pop();return d?{price:+d.Close,date:d.date}:null;
+  }
+  return null;   // 其他市場請手動輸入
+}
+async function updatePrices(manual){
+  if(PX.busy||!S.stocks.length)return;
+  if(!navigator.onLine){if(manual)alert('目前沒有網路，連上網後再更新');return}
+  PX.busy=true;PX.msg='⏳ 更新股價中…';if(tab==='stocks')render();
+  const keys=[...new Set(S.stocks.map(s=>(s.currency||'TWD')+'|'+String(s.symbol||'').trim().toUpperCase()))];
+  const res={},fail=[];let stop=null;
+  const q=[...keys];
+  await Promise.all(Array.from({length:4},async()=>{while(q.length&&!stop){const k=q.shift();const[c,sym]=k.split('|');
+    try{const r=await quoteOf(sym,c);if(r)res[k]=r;else fail.push(sym)}catch(e){if(/頻繁/.test(e.message))stop=e.message;fail.push(sym)}}}));
+  let n=0,latest='';
+  for(const s of S.stocks){const r=res[(s.currency||'TWD')+'|'+String(s.symbol||'').trim().toUpperCase()];
+    if(r){s.price=r.price;s.priceDate=r.date;n++;if(r.date>latest)latest=r.date}}
+  S.meta.priceUpdated=new Date().toISOString();if(latest)S.meta.priceDate=latest;
+  PX.busy=false;
+  PX.msg=n?`✅ 已更新 ${n} 檔股價（${latest} 收盤價）${fail.length?`；${[...new Set(fail)].join('、')} 查不到，請手動輸入`:''}`:`⚠️ 沒有更新到股價${stop?'：'+stop:'，請確認股票代號與幣別（台股 TWD、美股 USD）'}`;
+  save();render();if(manual&&!n)alert(PX.msg.replace(/^⚠️ /,''));
+}
+// 開 App、切回 App 時：距離上次更新超過 1 小時就自動更新（可在股票頁關閉）
+function autoPrices(){
+  if(S.meta.autoPrice===false||!S.stocks.length||document.visibilityState!=='visible')return;
+  const last=S.meta.priceUpdated?Date.parse(S.meta.priceUpdated):0;
+  if(Date.now()-last>3600e3)updatePrices(false);
+}
+setTimeout(autoPrices,2500);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')autoPrices()});
+window.addEventListener('online',autoPrices);
+setInterval(autoPrices,15*60e3);
 async function updateFx(){
   try{
     const r=await(await fetch('https://open.er-api.com/v6/latest/TWD')).json();
